@@ -1,0 +1,58 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Keepalive —— 防止 Auto 工作流被 GitHub 以「不活动」为由禁用
+#
+# 为什么需要：
+#   GitHub 会在一「公开仓库」连续 60 天没有*仓库活动*后，自动禁用该仓库里
+#   所有 schedule 定时工作流。关键在于：定时任务自己每天成功运行，**不算**
+#   仓库活动，只有提交/推送这类动作才算。
+#
+#   本仓库的实证：最后一次提交是 2026-07-23；Auto 工作流此前每天都运行成功，
+#   但仍在 60 天后（最后一条成功运行 2026-09-22T01:03:05Z）被标记为
+#   disabled_inactivity，定时触发就此停止。
+#
+# 这个工作流做什么：
+#   每月 1 日和 15 日各写一次心跳文件并提交，把「仓库不活动」的时间窗压在
+#   15 天以内，远小于 60 天阈值。即使某次定时被 GitHub 丢弃（高峰期会发生），
+#   最长间隔也只有约 45 天，依然安全。
+#
+# 注意：它自己也是 schedule 工作流，所以同样受 60 天规则约束 —— 而它每半个月
+# 制造一次提交，正好让自己永远不会触碰这条线。若哪天在 Actions 里看到它变成
+# disabled，手动点一次 Enable workflow 即可恢复。
+# ─────────────────────────────────────────────────────────────────────────────
+name: Keepalive
+
+on:
+  schedule:
+    # 每月 1 日、15 日 03:17 UTC（北京时间 11:17）。
+    # 刻意避开整点：GitHub 在整点负载高，定时任务容易被延迟甚至丢弃。
+    - cron: "17 3 1,15 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
+jobs:
+  heartbeat:
+    name: Heartbeat commit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write heartbeat file
+        run: date -u '+%Y-%m-%dT%H:%M:%SZ' > .github/heartbeat.txt
+
+      - name: Commit and push
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/heartbeat.txt
+          if git diff --cached --quiet; then
+            echo 'no change, nothing to do'
+            exit 0
+          fi
+          git commit -m "chore(keepalive): heartbeat $(date -u '+%Y-%m-%d')"
+          git push
